@@ -54,6 +54,8 @@ func main() {
 		if err := runExpose(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
+	case "-h", "--help", "help":
+		usage()
 	case "login":
 		fmt.Println("login is not implemented yet; use TUNNELTO_TOKEN for now")
 	case "status":
@@ -61,6 +63,12 @@ func main() {
 	case "stop":
 		fmt.Println("press Ctrl-C in the running tunnelto expose process to stop the tunnel")
 	default:
+		if looksLikeTarget(os.Args[1]) {
+			if err := runExpose(os.Args[1:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 		usage()
 		os.Exit(1)
 	}
@@ -68,6 +76,7 @@ func main() {
 
 func usage() {
 	fmt.Println("Usage:")
+	fmt.Println("  tunnelto 3000 [--name claw] [--relay http://localhost:8080]")
 	fmt.Println("  tunnelto expose http://localhost:3000 [--name claw] [--relay http://localhost:8080]")
 	fmt.Println("  tunnelto login")
 	fmt.Println("  tunnelto status")
@@ -80,7 +89,11 @@ func runExpose(args []string) error {
 		return err
 	}
 
-	target, err := url.Parse(opts.target)
+	targetRaw, err := normalizeTargetArgument(opts.target)
+	if err != nil {
+		return err
+	}
+	target, err := url.Parse(targetRaw)
 	if err != nil {
 		return err
 	}
@@ -203,6 +216,51 @@ func parseExposeArgs(args []string) (options, error) {
 		return opts, errors.New("missing target URL")
 	}
 	return opts, nil
+}
+
+func looksLikeTarget(arg string) bool {
+	if isPort(arg) {
+		return true
+	}
+	return strings.Contains(arg, "://") || hasHostPortTarget(arg)
+}
+
+func normalizeTargetArgument(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("missing target URL")
+	}
+	if isPort(raw) {
+		return "http://localhost:" + raw, nil
+	}
+	if strings.HasPrefix(raw, ":") && isPort(strings.TrimPrefix(raw, ":")) {
+		return "http://localhost" + raw, nil
+	}
+	if !strings.Contains(raw, "://") && hasHostPortTarget(raw) {
+		return "http://" + raw, nil
+	}
+	return raw, nil
+}
+
+func hasHostPortTarget(value string) bool {
+	if strings.HasPrefix(value, "[") {
+		end := strings.LastIndex(value, "]:")
+		return end > 0 && isPort(value[end+2:])
+	}
+	host, port, ok := strings.Cut(value, ":")
+	return ok && host != "" && !strings.Contains(port, ":") && isPort(port)
+}
+
+func isPort(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeRelayURL(raw string) (string, error) {
