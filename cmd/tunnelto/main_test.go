@@ -45,6 +45,12 @@ func TestLooksLikeTargetAllowsPortShorthand(t *testing.T) {
 	}
 }
 
+func TestVersionDefaultIsSet(t *testing.T) {
+	if version == "" {
+		t.Fatal("expected version to have a default value")
+	}
+}
+
 func TestNormalizeRelayURL(t *testing.T) {
 	tests := map[string]string{
 		"localhost:8080":              "ws://localhost:8080/connect",

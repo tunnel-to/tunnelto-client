@@ -41,6 +41,8 @@ type localRequest struct {
 	wsMu sync.Mutex
 }
 
+var version = "dev"
+
 func main() {
 	log.SetFlags(0)
 
@@ -56,6 +58,8 @@ func main() {
 		}
 	case "-h", "--help", "help":
 		usage()
+	case "-v", "--version", "version":
+		fmt.Println("tunnelto " + version)
 	case "login":
 		fmt.Println("login is not implemented yet; use TUNNELTO_TOKEN for now")
 	case "status":
