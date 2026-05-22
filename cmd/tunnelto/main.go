@@ -41,6 +41,8 @@ type localRequest struct {
 	wsMu sync.Mutex
 }
 
+const defaultRelayURL = "https://tor1.tunnel.to"
+
 var version = "dev"
 
 func main() {
@@ -80,8 +82,8 @@ func main() {
 
 func usage() {
 	fmt.Println("Usage:")
-	fmt.Println("  tunnelto 3000 [--name claw] [--relay http://localhost:8080]")
-	fmt.Println("  tunnelto expose http://localhost:3000 [--name claw] [--relay http://localhost:8080]")
+	fmt.Println("  tunnelto 3000 [--name claw]")
+	fmt.Println("  tunnelto expose http://localhost:3000 [--name claw] [--relay https://tor1.tunnel.to]")
 	fmt.Println("  tunnelto login")
 	fmt.Println("  tunnelto status")
 	fmt.Println("  tunnelto stop")
@@ -115,9 +117,12 @@ func runExpose(args []string) error {
 		header.Set("Authorization", "Bearer "+opts.token)
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(relayURL, header)
+	conn, res, err := websocket.DefaultDialer.Dial(relayURL, header)
 	if err != nil {
-		return err
+		if res != nil {
+			return fmt.Errorf("could not connect to relay %s: %w (HTTP %s)", relayURL, err, res.Status)
+		}
+		return fmt.Errorf("could not connect to relay %s: %w", relayURL, err)
 	}
 	defer conn.Close()
 
@@ -175,7 +180,7 @@ func runExpose(args []string) error {
 
 func parseExposeArgs(args []string) (options, error) {
 	opts := options{
-		relay: env("TUNNELTO_RELAY_URL", "http://localhost:8080"),
+		relay: env("TUNNELTO_RELAY_URL", defaultRelayURL),
 		token: os.Getenv("TUNNELTO_TOKEN"),
 	}
 

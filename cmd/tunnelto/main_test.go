@@ -12,6 +12,17 @@ func TestParseExposeArgsAllowsFlagsAfterTarget(t *testing.T) {
 	}
 }
 
+func TestParseExposeArgsDefaultsToProductionRelay(t *testing.T) {
+	t.Setenv("TUNNELTO_RELAY_URL", "")
+	opts, err := parseExposeArgs([]string{"3000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.relay != defaultRelayURL {
+		t.Fatalf("default relay = %q; want %q", opts.relay, defaultRelayURL)
+	}
+}
+
 func TestNormalizeTargetArgument(t *testing.T) {
 	tests := map[string]string{
 		"3000":                  "http://localhost:3000",
