@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/tunnel-to/tunnelto-client/pkg/proto"
@@ -21,7 +24,20 @@ type options struct {
 	target string
 	name   string
 	relay  string
+	api    string
 	token  string
+	region string
+}
+
+type apiRegisterResponse struct {
+	Tunnel struct {
+		Name string `json:"name"`
+	} `json:"tunnel"`
+	Relay struct {
+		ConnectURL string `json:"connect_url"`
+	} `json:"relay"`
+	PublicURL    string `json:"public_url"`
+	ConnectToken string `json:"connect_token"`
 }
 
 type tunnelClient struct {
@@ -42,6 +58,7 @@ type localRequest struct {
 }
 
 const defaultRelayURL = "https://tor1.tunnel.to"
+const defaultAPIURL = "https://tunnel.to"
 
 var version = "dev"
 
@@ -82,7 +99,7 @@ func main() {
 
 func usage() {
 	fmt.Println("Usage:")
-	fmt.Println("  tunnelto 3000 [--name claw]")
+	fmt.Println("  tunnelto 3000 [--name claw] [--region us-west]")
 	fmt.Println("  tunnelto expose http://localhost:3000 [--name claw] [--relay https://tor1.tunnel.to]")
 	fmt.Println("  tunnelto login")
 	fmt.Println("  tunnelto status")
@@ -105,6 +122,26 @@ func runExpose(args []string) error {
 	}
 	if target.Scheme != "http" && target.Scheme != "https" {
 		return fmt.Errorf("target must be an http or https URL: %s", opts.target)
+	}
+
+	var registration apiRegisterResponse
+	if opts.region != "" && opts.api == "" {
+		opts.api = defaultAPIURL
+	}
+	if opts.api != "" {
+		registration, err = registerTunnelWithAPI(opts, target.String())
+		if err != nil {
+			return err
+		}
+		if registration.Relay.ConnectURL != "" {
+			opts.relay = registration.Relay.ConnectURL
+		}
+		if registration.ConnectToken != "" {
+			opts.token = registration.ConnectToken
+		}
+		if opts.name == "" && registration.Tunnel.Name != "" {
+			opts.name = registration.Tunnel.Name
+		}
 	}
 
 	relayURL, err := normalizeRelayURL(opts.relay)
@@ -156,7 +193,11 @@ func runExpose(args []string) error {
 	fmt.Println("[ok] Connected")
 	fmt.Println("[ok] Tunnel established")
 	fmt.Println()
-	fmt.Println(registered.PublicURL)
+	if registration.PublicURL != "" {
+		fmt.Println(registration.PublicURL)
+	} else {
+		fmt.Println(registered.PublicURL)
+	}
 	fmt.Println()
 	fmt.Println("Forwarding to " + target.String())
 	fmt.Println("Press Ctrl-C to stop.")
@@ -180,8 +221,10 @@ func runExpose(args []string) error {
 
 func parseExposeArgs(args []string) (options, error) {
 	opts := options{
-		relay: env("TUNNELTO_RELAY_URL", defaultRelayURL),
-		token: os.Getenv("TUNNELTO_TOKEN"),
+		relay:  env("TUNNELTO_RELAY_URL", defaultRelayURL),
+		api:    strings.TrimRight(os.Getenv("TUNNELTO_API_URL"), "/"),
+		token:  os.Getenv("TUNNELTO_TOKEN"),
+		region: os.Getenv("TUNNELTO_REGION"),
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -203,6 +246,14 @@ func parseExposeArgs(args []string) (options, error) {
 			opts.relay = args[i]
 		case strings.HasPrefix(arg, "--relay="):
 			opts.relay = strings.TrimPrefix(arg, "--relay=")
+		case arg == "--api":
+			i++
+			if i >= len(args) {
+				return opts, errors.New("--api requires a value")
+			}
+			opts.api = strings.TrimRight(args[i], "/")
+		case strings.HasPrefix(arg, "--api="):
+			opts.api = strings.TrimRight(strings.TrimPrefix(arg, "--api="), "/")
 		case arg == "--token":
 			i++
 			if i >= len(args) {
@@ -211,6 +262,14 @@ func parseExposeArgs(args []string) (options, error) {
 			opts.token = args[i]
 		case strings.HasPrefix(arg, "--token="):
 			opts.token = strings.TrimPrefix(arg, "--token=")
+		case arg == "--region":
+			i++
+			if i >= len(args) {
+				return opts, errors.New("--region requires a value")
+			}
+			opts.region = args[i]
+		case strings.HasPrefix(arg, "--region="):
+			opts.region = strings.TrimPrefix(arg, "--region=")
 		case strings.HasPrefix(arg, "-"):
 			return opts, fmt.Errorf("unknown option: %s", arg)
 		default:
@@ -270,6 +329,54 @@ func isPort(value string) bool {
 		}
 	}
 	return true
+}
+
+func registerTunnelWithAPI(opts options, targetHint string) (apiRegisterResponse, error) {
+	payload := map[string]string{
+		"name":             opts.name,
+		"target_hint":      targetHint,
+		"client_version":   version,
+		"preferred_region": opts.region,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return apiRegisterResponse{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(opts.api, "/")+"/api/tunnels/register", bytes.NewReader(body))
+	if err != nil {
+		return apiRegisterResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "tunnelto-client/"+version)
+	if opts.token != "" {
+		req.Header.Set("Authorization", "Bearer "+opts.token)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return apiRegisterResponse{}, err
+	}
+	defer res.Body.Close()
+
+	var out apiRegisterResponse
+	if res.StatusCode >= 200 && res.StatusCode < 300 {
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			return apiRegisterResponse{}, err
+		}
+		if out.Relay.ConnectURL == "" {
+			return apiRegisterResponse{}, errors.New("control plane did not return a relay connect URL")
+		}
+		return out, nil
+	}
+
+	var errorPayload struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&errorPayload)
+	if errorPayload.Error == "" {
+		errorPayload.Error = res.Status
+	}
+	return apiRegisterResponse{}, fmt.Errorf("control plane registration failed: %s", errorPayload.Error)
 }
 
 func normalizeRelayURL(raw string) (string, error) {

@@ -3,11 +3,11 @@ package main
 import "testing"
 
 func TestParseExposeArgsAllowsFlagsAfterTarget(t *testing.T) {
-	opts, err := parseExposeArgs([]string{"http://localhost:3000", "--name", "claw", "--relay", "http://localhost:8080"})
+	opts, err := parseExposeArgs([]string{"http://localhost:3000", "--name", "claw", "--relay", "http://localhost:8080", "--region", "us-west"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.target != "http://localhost:3000" || opts.name != "claw" || opts.relay != "http://localhost:8080" {
+	if opts.target != "http://localhost:3000" || opts.name != "claw" || opts.relay != "http://localhost:8080" || opts.region != "us-west" {
 		t.Fatalf("unexpected options: %#v", opts)
 	}
 }

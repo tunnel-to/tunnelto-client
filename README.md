@@ -11,10 +11,24 @@ make build
 ## Use
 
 ```bash
-tunnelto expose http://localhost:3000 --name claw --relay https://relay.tunnel.to
+tunnelto 3000
 ```
 
-During local development, the relay defaults to `http://localhost:8080`.
+The default relay is Toronto and returns URLs under `https://<name>.tunnel.to`.
+
+Select another region through the control plane:
+
+```bash
+tunnelto 3000 --region us-west
+```
+
+Or connect directly to a relay:
+
+```bash
+tunnelto 3000 --relay https://sfo1.tunnel.to
+```
+
+Supported region values include `ca-toronto`, `us-new-york`, `us-west`, and `eu-frankfurt`; common aliases like `tor`, `nyc`, `sfo`, `west`, and `fra` are accepted by the API.
 
 ## Test
 
