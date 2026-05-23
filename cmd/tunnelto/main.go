@@ -21,12 +21,13 @@ import (
 )
 
 type options struct {
-	target string
-	name   string
-	relay  string
-	api    string
-	token  string
-	region string
+	target     string
+	name       string
+	relay      string
+	api        string
+	token      string
+	region     string
+	hostHeader string
 }
 
 type apiRegisterResponse struct {
@@ -43,6 +44,7 @@ type apiRegisterResponse struct {
 type tunnelClient struct {
 	conn       *websocket.Conn
 	target     *url.URL
+	hostHeader string
 	httpClient *http.Client
 
 	writeMu sync.Mutex
@@ -99,11 +101,18 @@ func main() {
 
 func usage() {
 	fmt.Println("Usage:")
-	fmt.Println("  tunnelto 3000 [--name claw] [--region us-west]")
-	fmt.Println("  tunnelto expose http://localhost:3000 [--name claw] [--relay https://tor1.tunnel.to]")
+	fmt.Println("  tunnelto 3000 [--name claw] [--region us-west] [--host-header localhost]")
+	fmt.Println("  tunnelto expose http://localhost:3000 [--name claw] [--host-header rewrite] [--relay https://tor1.tunnel.to]")
 	fmt.Println("  tunnelto login")
 	fmt.Println("  tunnelto status")
 	fmt.Println("  tunnelto stop")
+	fmt.Println()
+	fmt.Println("Host header modes:")
+	fmt.Println("  --host-header preserve     preserve the public host from the tunnel request (default)")
+	fmt.Println("  --host-header localhost    send Host: localhost to the upstream app")
+	fmt.Println("  --host-header rewrite      derive Host from the upstream target host")
+	fmt.Println("  --host-header internal     send an explicit upstream host")
+	fmt.Println("  --upstream-host is an alias for --host-header")
 }
 
 func runExpose(args []string) error {
@@ -166,6 +175,7 @@ func runExpose(args []string) error {
 	c := &tunnelClient{
 		conn:       conn,
 		target:     target,
+		hostHeader: opts.hostHeader,
 		httpClient: &http.Client{Timeout: 0},
 		requests:   make(map[string]*localRequest),
 	}
@@ -221,10 +231,11 @@ func runExpose(args []string) error {
 
 func parseExposeArgs(args []string) (options, error) {
 	opts := options{
-		relay:  env("TUNNELTO_RELAY_URL", defaultRelayURL),
-		api:    strings.TrimRight(os.Getenv("TUNNELTO_API_URL"), "/"),
-		token:  os.Getenv("TUNNELTO_TOKEN"),
-		region: os.Getenv("TUNNELTO_REGION"),
+		relay:      env("TUNNELTO_RELAY_URL", defaultRelayURL),
+		api:        strings.TrimRight(os.Getenv("TUNNELTO_API_URL"), "/"),
+		token:      os.Getenv("TUNNELTO_TOKEN"),
+		region:     os.Getenv("TUNNELTO_REGION"),
+		hostHeader: "preserve",
 	}
 
 	for i := 0; i < len(args); i++ {
@@ -270,6 +281,16 @@ func parseExposeArgs(args []string) (options, error) {
 			opts.region = args[i]
 		case strings.HasPrefix(arg, "--region="):
 			opts.region = strings.TrimPrefix(arg, "--region=")
+		case arg == "--host-header" || arg == "--upstream-host":
+			i++
+			if i >= len(args) {
+				return opts, fmt.Errorf("%s requires a value", arg)
+			}
+			opts.hostHeader = args[i]
+		case strings.HasPrefix(arg, "--host-header="):
+			opts.hostHeader = strings.TrimPrefix(arg, "--host-header=")
+		case strings.HasPrefix(arg, "--upstream-host="):
+			opts.hostHeader = strings.TrimPrefix(arg, "--upstream-host=")
 		case strings.HasPrefix(arg, "-"):
 			return opts, fmt.Errorf("unknown option: %s", arg)
 		default:
@@ -282,6 +303,10 @@ func parseExposeArgs(args []string) (options, error) {
 
 	if opts.target == "" {
 		return opts, errors.New("missing target URL")
+	}
+	opts.hostHeader = strings.TrimSpace(opts.hostHeader)
+	if err := validateHostHeaderOption(opts.hostHeader); err != nil {
+		return opts, err
 	}
 	return opts, nil
 }
@@ -463,6 +488,7 @@ func (c *tunnelClient) doHTTPRequest(msg proto.Message, body io.Reader, bodyWrit
 		return
 	}
 	proto.ApplyHeaders(req.Header, msg.Headers)
+	c.prepareUpstreamHeaders(req, req.Header)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -533,6 +559,7 @@ func (c *tunnelClient) closeBodyWithError(body *io.PipeWriter, err error) {
 func (c *tunnelClient) startWebSocket(msg proto.Message) {
 	localURL := c.localWebSocketURL(msg.Path, msg.Query)
 	header := websocketDialHeaders(msg.Headers)
+	c.prepareUpstreamHeaderValues(header)
 
 	conn, _, err := websocket.DefaultDialer.Dial(localURL, header)
 	if err != nil {
@@ -562,6 +589,109 @@ func websocketDialHeaders(headers []proto.Header) http.Header {
 		out.Add(header.Name, header.Value)
 	}
 	return out
+}
+
+func validateHostHeaderOption(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("--host-header requires a non-empty value")
+	}
+	switch value {
+	case "preserve", "rewrite":
+		return nil
+	}
+	if strings.Contains(value, "://") || strings.ContainsAny(value, "/?#") {
+		return fmt.Errorf("--host-header must be a host name, not a URL: %s", value)
+	}
+	if strings.ContainsAny(value, "\r\n\t ") {
+		return fmt.Errorf("--host-header contains invalid whitespace: %q", value)
+	}
+	return nil
+}
+
+func (c *tunnelClient) prepareUpstreamHeaders(req *http.Request, headers http.Header) {
+	c.prepareUpstreamHeaderValues(headers)
+	if host := c.upstreamHost(headers); host != "" {
+		req.Host = host
+	}
+	headers.Del("Host")
+}
+
+func (c *tunnelClient) prepareUpstreamHeaderValues(headers http.Header) {
+	ensureForwardedHeader(headers)
+	if host := c.upstreamHost(headers); host != "" {
+		headers.Set("Host", host)
+	}
+}
+
+func (c *tunnelClient) upstreamHost(headers http.Header) string {
+	switch c.hostHeader {
+	case "", "preserve":
+		return firstHeaderValue(headers, "X-Forwarded-Host", "Host")
+	case "rewrite":
+		return targetHostHeader(c.target)
+	default:
+		return c.hostHeader
+	}
+}
+
+func firstHeaderValue(headers http.Header, names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func targetHostHeader(target *url.URL) string {
+	host := target.Hostname()
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func ensureForwardedHeader(headers http.Header) {
+	if headers.Get("Forwarded") != "" {
+		return
+	}
+	host := strings.TrimSpace(headers.Get("X-Forwarded-Host"))
+	proto := strings.TrimSpace(headers.Get("X-Forwarded-Proto"))
+	if host == "" && proto == "" {
+		return
+	}
+
+	parts := make([]string, 0, 2)
+	if host != "" {
+		parts = append(parts, "host="+forwardedHeaderValue(host))
+	}
+	if proto != "" {
+		parts = append(parts, "proto="+forwardedHeaderValue(proto))
+	}
+	headers.Set("Forwarded", strings.Join(parts, ";"))
+}
+
+func forwardedHeaderValue(value string) string {
+	if value == "" {
+		return `""`
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '.', '-', '_', '~', ':':
+			continue
+		}
+		escaped := strings.ReplaceAll(value, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		return `"` + escaped + `"`
+	}
+	return value
 }
 
 func (c *tunnelClient) readLocalWebSocket(requestID string, conn *websocket.Conn) {
