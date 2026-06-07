@@ -583,12 +583,21 @@ func websocketDialHeaders(headers []proto.Header) http.Header {
 	out := http.Header{}
 	for _, header := range headers {
 		name := http.CanonicalHeaderKey(header.Name)
-		if name == "Origin" || strings.HasPrefix(name, "Sec-Websocket-") {
+		if websocketDialerOwnsHeader(name) {
 			continue
 		}
-		out.Add(header.Name, header.Value)
+		out.Add(name, header.Value)
 	}
 	return out
+}
+
+func websocketDialerOwnsHeader(name string) bool {
+	switch name {
+	case "Connection", "Upgrade", "Sec-Websocket-Key", "Sec-Websocket-Version", "Sec-Websocket-Extensions":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateHostHeaderOption(value string) error {

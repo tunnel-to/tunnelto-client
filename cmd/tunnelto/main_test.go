@@ -2,8 +2,13 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
+	"github.com/tunnel-to/tunnelto-client/pkg/proto"
 )
 
 func TestParseExposeArgsAllowsFlagsAfterTarget(t *testing.T) {
@@ -192,6 +197,69 @@ func TestPrepareUpstreamHeaderValuesForWebSocket(t *testing.T) {
 	}
 	if got := headers.Get("Forwarded"); got != "host=claw.tunnel.to;proto=https" {
 		t.Fatalf("Forwarded = %q; want derived header", got)
+	}
+}
+
+func TestWebSocketDialPreservesOriginAndPublicHost(t *testing.T) {
+	type capturedHandshake struct {
+		host      string
+		origin    string
+		protocol  string
+		key       string
+		forwarded string
+	}
+	captured := make(chan capturedHandshake, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		captured <- capturedHandshake{
+			host:      req.Host,
+			origin:    req.Header.Get("Origin"),
+			protocol:  req.Header.Get("Sec-WebSocket-Protocol"),
+			key:       req.Header.Get("Sec-WebSocket-Key"),
+			forwarded: req.Header.Get("Forwarded"),
+		}
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer server.Close()
+
+	target := mustParseURL(t, server.URL)
+	client := &tunnelClient{target: target, hostHeader: "preserve"}
+	headers := websocketDialHeaders([]proto.Header{
+		{Name: "Host", Value: "claw.tunnel.to"},
+		{Name: "Origin", Value: "https://claw.tunnel.to"},
+		{Name: "Sec-WebSocket-Key", Value: "browser-generated-key"},
+		{Name: "Sec-WebSocket-Version", Value: "13"},
+		{Name: "Sec-WebSocket-Protocol", Value: "openclaw.v1"},
+		{Name: "X-Forwarded-Host", Value: "claw.tunnel.to"},
+		{Name: "X-Forwarded-Proto", Value: "https"},
+	})
+	client.prepareUpstreamHeaderValues(headers)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+
+	got := <-captured
+	if got.host != "claw.tunnel.to" {
+		t.Fatalf("Host = %q; want public tunnel host", got.host)
+	}
+	if got.origin != "https://claw.tunnel.to" {
+		t.Fatalf("Origin = %q; want browser origin", got.origin)
+	}
+	if got.protocol != "openclaw.v1" {
+		t.Fatalf("Sec-WebSocket-Protocol = %q; want preserved protocol", got.protocol)
+	}
+	if got.key == "browser-generated-key" || got.key == "" {
+		t.Fatalf("Sec-WebSocket-Key = %q; want gorilla-generated connection key", got.key)
+	}
+	if got.forwarded != "host=claw.tunnel.to;proto=https" {
+		t.Fatalf("Forwarded = %q; want derived forwarded header", got.forwarded)
 	}
 }
 

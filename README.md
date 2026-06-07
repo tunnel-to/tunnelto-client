@@ -38,7 +38,9 @@ tunnelto 127.0.0.1:3000 --host-header rewrite
 tunnelto 3000 --upstream-host internal.example
 ```
 
-The public tunnel host is still forwarded through `X-Forwarded-Host`; the client also forwards `X-Forwarded-Proto` and derives a standard `Forwarded` header when possible.
+The public tunnel host is still forwarded through `X-Forwarded-Host`; the client also forwards `X-Forwarded-For` and `X-Forwarded-Proto`, and derives a standard `Forwarded` header when possible. WebSocket upgrades preserve the browser `Origin`, public `Host`, and application-level headers such as `Sec-WebSocket-Protocol` by default; connection-specific WebSocket key/version/extension headers are regenerated for the local upstream handshake.
+
+OpenClaw users still need to add the public tunnel origin to OpenClaw's normal Control UI allowlist. See [docs/openclaw.md](docs/openclaw.md) for the helper script and exact origin examples.
 
 ## Test
 
