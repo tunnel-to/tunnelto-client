@@ -39,12 +39,40 @@ func TestParseExposeArgsRejectsHostHeaderURL(t *testing.T) {
 
 func TestParseExposeArgsDefaultsToProductionRelay(t *testing.T) {
 	t.Setenv("TUNNELTO_RELAY_URL", "")
+	t.Setenv("TUNNELTO_API_URL", "")
+	t.Setenv("TUNNELTO_TOKEN", "")
 	opts, err := parseExposeArgs([]string{"3000"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if opts.relay != defaultRelayURL {
 		t.Fatalf("default relay = %q; want %q", opts.relay, defaultRelayURL)
+	}
+}
+
+func TestParseExposeArgsDefaultsToProductionAPIWithToken(t *testing.T) {
+	t.Setenv("TUNNELTO_RELAY_URL", "")
+	t.Setenv("TUNNELTO_API_URL", "")
+	t.Setenv("TUNNELTO_TOKEN", "tt_live_test")
+	opts, err := parseExposeArgs([]string{"3000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.api != "https://tunnel.to" {
+		t.Fatalf("api = %q; want https://tunnel.to", opts.api)
+	}
+}
+
+func TestParseExposeArgsAPIFlagOverridesTokenDefault(t *testing.T) {
+	t.Setenv("TUNNELTO_RELAY_URL", "")
+	t.Setenv("TUNNELTO_API_URL", "")
+	t.Setenv("TUNNELTO_TOKEN", "tt_live_test")
+	opts, err := parseExposeArgs([]string{"3000", "--api", "https://staging.tunnel.to/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.api != "https://staging.tunnel.to" {
+		t.Fatalf("api = %q; want override", opts.api)
 	}
 }
 

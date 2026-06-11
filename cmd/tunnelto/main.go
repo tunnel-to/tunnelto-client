@@ -304,6 +304,9 @@ func parseExposeArgs(args []string) (options, error) {
 	if opts.target == "" {
 		return opts, errors.New("missing target URL")
 	}
+	if opts.api == "" && opts.token != "" {
+		opts.api = "https://tunnel.to"
+	}
 	opts.hostHeader = strings.TrimSpace(opts.hostHeader)
 	if err := validateHostHeaderOption(opts.hostHeader); err != nil {
 		return opts, err
