@@ -230,6 +230,7 @@ func runExpose(args []string) error {
 }
 
 func parseExposeArgs(args []string) (options, error) {
+	relayOverride := strings.TrimSpace(os.Getenv("TUNNELTO_RELAY_URL")) != ""
 	opts := options{
 		relay:      env("TUNNELTO_RELAY_URL", defaultRelayURL),
 		api:        strings.TrimRight(os.Getenv("TUNNELTO_API_URL"), "/"),
@@ -255,8 +256,10 @@ func parseExposeArgs(args []string) (options, error) {
 				return opts, errors.New("--relay requires a value")
 			}
 			opts.relay = args[i]
+			relayOverride = true
 		case strings.HasPrefix(arg, "--relay="):
 			opts.relay = strings.TrimPrefix(arg, "--relay=")
+			relayOverride = true
 		case arg == "--api":
 			i++
 			if i >= len(args) {
@@ -304,8 +307,8 @@ func parseExposeArgs(args []string) (options, error) {
 	if opts.target == "" {
 		return opts, errors.New("missing target URL")
 	}
-	if opts.api == "" && opts.token != "" {
-		opts.api = "https://tunnel.to"
+	if opts.api == "" && !relayOverride {
+		opts.api = defaultAPIURL
 	}
 	opts.hostHeader = strings.TrimSpace(opts.hostHeader)
 	if err := validateHostHeaderOption(opts.hostHeader); err != nil {

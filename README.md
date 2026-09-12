@@ -14,7 +14,9 @@ make build
 tunnelto 3000
 ```
 
-The default relay is Toronto and returns URLs under `https://<name>.tunnel.to`.
+The client automatically registers an anonymous ephemeral tunnel with the
+tunnel.to control plane, obtains a short-lived connect token, and returns a URL
+under `https://<name>.tunnel.to`. No account or token setup is required.
 
 Select another region through the control plane:
 

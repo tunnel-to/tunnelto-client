@@ -37,7 +37,7 @@ func TestParseExposeArgsRejectsHostHeaderURL(t *testing.T) {
 	}
 }
 
-func TestParseExposeArgsDefaultsToProductionRelay(t *testing.T) {
+func TestParseExposeArgsDefaultsToProductionControlPlane(t *testing.T) {
 	t.Setenv("TUNNELTO_RELAY_URL", "")
 	t.Setenv("TUNNELTO_API_URL", "")
 	t.Setenv("TUNNELTO_TOKEN", "")
@@ -48,31 +48,51 @@ func TestParseExposeArgsDefaultsToProductionRelay(t *testing.T) {
 	if opts.relay != defaultRelayURL {
 		t.Fatalf("default relay = %q; want %q", opts.relay, defaultRelayURL)
 	}
-}
-
-func TestParseExposeArgsDefaultsToProductionAPIWithToken(t *testing.T) {
-	t.Setenv("TUNNELTO_RELAY_URL", "")
-	t.Setenv("TUNNELTO_API_URL", "")
-	t.Setenv("TUNNELTO_TOKEN", "tt_live_test")
-	opts, err := parseExposeArgs([]string{"3000"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opts.api != "https://tunnel.to" {
-		t.Fatalf("api = %q; want https://tunnel.to", opts.api)
+	if opts.api != defaultAPIURL {
+		t.Fatalf("default api = %q; want %q", opts.api, defaultAPIURL)
 	}
 }
 
-func TestParseExposeArgsAPIFlagOverridesTokenDefault(t *testing.T) {
+func TestParseExposeArgsAPIFlagOverridesDefault(t *testing.T) {
 	t.Setenv("TUNNELTO_RELAY_URL", "")
 	t.Setenv("TUNNELTO_API_URL", "")
-	t.Setenv("TUNNELTO_TOKEN", "tt_live_test")
+	t.Setenv("TUNNELTO_TOKEN", "")
 	opts, err := parseExposeArgs([]string{"3000", "--api", "https://staging.tunnel.to/"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if opts.api != "https://staging.tunnel.to" {
 		t.Fatalf("api = %q; want override", opts.api)
+	}
+}
+
+func TestParseExposeArgsExplicitRelayBypassesDefaultControlPlane(t *testing.T) {
+	t.Setenv("TUNNELTO_RELAY_URL", "")
+	t.Setenv("TUNNELTO_API_URL", "")
+	t.Setenv("TUNNELTO_TOKEN", "")
+	opts, err := parseExposeArgs([]string{"8765", "--relay", "http://localhost:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.api != "" {
+		t.Fatalf("api = %q; want direct relay connection", opts.api)
+	}
+}
+
+func TestParseExposeArgsDefaultsToProductionAPIForAnyPort(t *testing.T) {
+	for _, port := range []string{"1", "3000", "8765", "65535"} {
+		t.Run(port, func(t *testing.T) {
+			t.Setenv("TUNNELTO_RELAY_URL", "")
+			t.Setenv("TUNNELTO_API_URL", "")
+			t.Setenv("TUNNELTO_TOKEN", "")
+			opts, err := parseExposeArgs([]string{port})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if opts.api != defaultAPIURL {
+				t.Fatalf("api = %q; want %q", opts.api, defaultAPIURL)
+			}
+		})
 	}
 }
 
