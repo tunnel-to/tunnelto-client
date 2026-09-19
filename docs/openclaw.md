@@ -1,15 +1,16 @@
 # OpenClaw Through tunnel.to
 
-OpenClaw should work through tunnel.to with the default browser-facing tunnel behavior:
+OpenClaw should work through tunnel.to with the default browser-facing tunnel behavior.
+Replace `<openclaw-port>` with the port where your OpenClaw instance is listening:
 
 ```bash
-tunnelto 18789
+tunnelto <openclaw-port>
 ```
 
 or, explicitly:
 
 ```bash
-tunnelto 18789 --host-header preserve
+tunnelto <openclaw-port> --host-header preserve
 ```
 
 The tunnel preserves the browser `Origin`, public `Host`, and standard forwarding headers. OpenClaw still requires the public tunnel origin to be listed in `gateway.controlUi.allowedOrigins`.
