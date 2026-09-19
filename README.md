@@ -49,3 +49,7 @@ OpenClaw users still need to add the public tunnel origin to OpenClaw's normal C
 ```bash
 make test
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE) (SPDX: `Apache-2.0`).
