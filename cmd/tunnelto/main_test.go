@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/tunnel-to/tunnelto-client/pkg/proto"
@@ -308,6 +310,62 @@ func TestWebSocketDialPreservesOriginAndPublicHost(t *testing.T) {
 	}
 	if got.forwarded != "host=claw.tunnel.to;proto=https" {
 		t.Fatalf("Forwarded = %q; want derived forwarded header", got.forwarded)
+	}
+}
+
+func TestCancelHTTPRequestCancelsBodylessStreamingUpstream(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		close(started)
+		<-req.Context().Done()
+		close(canceled)
+	}))
+	defer upstream.Close()
+
+	serverConn := make(chan *websocket.Conn, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	transport := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			return
+		}
+		serverConn <- conn
+	}))
+	defer transport.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(transport.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	peer := <-serverConn
+	defer peer.Close()
+
+	client := &tunnelClient{
+		conn:       conn,
+		target:     mustParseURL(t, upstream.URL),
+		httpClient: &http.Client{},
+		requests:   make(map[string]*localRequest),
+	}
+	client.startHTTPRequest(proto.Message{
+		Type:      proto.TypeRequestStart,
+		RequestID: "stream-1",
+		Method:    http.MethodGet,
+		Path:      "/events",
+	})
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request did not start")
+	}
+	client.cancelHTTPRequest("stream-1", errors.New("public request canceled"))
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request context was not canceled")
 	}
 }
 

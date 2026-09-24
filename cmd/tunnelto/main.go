@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,9 +55,10 @@ type tunnelClient struct {
 }
 
 type localRequest struct {
-	body *io.PipeWriter
-	ws   *websocket.Conn
-	wsMu sync.Mutex
+	body   *io.PipeWriter
+	cancel context.CancelFunc
+	ws     *websocket.Conn
+	wsMu   sync.Mutex
 }
 
 const defaultRelayURL = "https://tor1.tunnel.to"
@@ -464,6 +466,8 @@ func (c *tunnelClient) readLoop() error {
 			c.writeWebSocketMessage(msg)
 		case proto.TypeWSClose:
 			c.closeWebSocket(msg.RequestID)
+		case proto.TypeStreamError:
+			c.cancelHTTPRequest(msg.RequestID, errors.New(msg.Error))
 		case proto.TypePing:
 			_ = c.write(proto.Message{Type: proto.TypePong})
 		}
@@ -473,24 +477,26 @@ func (c *tunnelClient) readLoop() error {
 func (c *tunnelClient) startHTTPRequest(msg proto.Message) {
 	var body io.Reader
 	var bodyWriter *io.PipeWriter
+	ctx, cancel := context.WithCancel(context.Background())
 
 	if msg.HasBody {
 		bodyReader, writer := io.Pipe()
 		body = bodyReader
 		bodyWriter = writer
-		c.setRequest(msg.RequestID, &localRequest{body: writer})
 	}
+	c.setRequest(msg.RequestID, &localRequest{body: bodyWriter, cancel: cancel})
 
-	go c.doHTTPRequest(msg, body, bodyWriter)
+	go c.doHTTPRequest(ctx, msg, body, bodyWriter)
 }
 
-func (c *tunnelClient) doHTTPRequest(msg proto.Message, body io.Reader, bodyWriter *io.PipeWriter) {
+func (c *tunnelClient) doHTTPRequest(ctx context.Context, msg proto.Message, body io.Reader, bodyWriter *io.PipeWriter) {
+	defer c.finishHTTPRequest(msg.RequestID)
+
 	localURL := c.localHTTPURL(msg.Path, msg.Query)
-	req, err := http.NewRequest(msg.Method, localURL, body)
+	req, err := http.NewRequestWithContext(ctx, msg.Method, localURL, body)
 	if err != nil {
 		c.closeBodyWithError(bodyWriter, err)
 		_ = c.write(proto.Message{Type: proto.TypeStreamError, RequestID: msg.RequestID, Error: err.Error()})
-		c.deleteRequest(msg.RequestID)
 		return
 	}
 	proto.ApplyHeaders(req.Header, msg.Headers)
@@ -500,7 +506,6 @@ func (c *tunnelClient) doHTTPRequest(msg proto.Message, body io.Reader, bodyWrit
 	if err != nil {
 		c.closeBodyWithError(bodyWriter, err)
 		_ = c.write(proto.Message{Type: proto.TypeStreamError, RequestID: msg.RequestID, Error: err.Error()})
-		c.deleteRequest(msg.RequestID)
 		return
 	}
 	defer resp.Body.Close()
@@ -511,7 +516,6 @@ func (c *tunnelClient) doHTTPRequest(msg proto.Message, body io.Reader, bodyWrit
 		StatusCode: resp.StatusCode,
 		Headers:    proto.HeadersFromHTTP(resp.Header),
 	}); err != nil {
-		c.deleteRequest(msg.RequestID)
 		return
 	}
 
@@ -521,18 +525,15 @@ func (c *tunnelClient) doHTTPRequest(msg proto.Message, body io.Reader, bodyWrit
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			if err := c.write(proto.Message{Type: proto.TypeResponseBody, RequestID: msg.RequestID, Body: chunk}); err != nil {
-				c.deleteRequest(msg.RequestID)
 				return
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
 			_ = c.write(proto.Message{Type: proto.TypeResponseEnd, RequestID: msg.RequestID})
-			c.deleteRequest(msg.RequestID)
 			return
 		}
 		if readErr != nil {
 			_ = c.write(proto.Message{Type: proto.TypeStreamError, RequestID: msg.RequestID, Error: readErr.Error()})
-			c.deleteRequest(msg.RequestID)
 			return
 		}
 	}
@@ -805,4 +806,27 @@ func (c *tunnelClient) deleteRequest(requestID string) {
 	c.reqMu.Lock()
 	delete(c.requests, requestID)
 	c.reqMu.Unlock()
+}
+
+func (c *tunnelClient) finishHTTPRequest(requestID string) {
+	c.reqMu.Lock()
+	req := c.requests[requestID]
+	delete(c.requests, requestID)
+	c.reqMu.Unlock()
+	if req != nil && req.cancel != nil {
+		req.cancel()
+	}
+}
+
+func (c *tunnelClient) cancelHTTPRequest(requestID string, err error) {
+	c.reqMu.Lock()
+	req := c.requests[requestID]
+	c.reqMu.Unlock()
+	if req == nil || req.cancel == nil {
+		return
+	}
+	if req.body != nil {
+		_ = req.body.CloseWithError(err)
+	}
+	req.cancel()
 }
